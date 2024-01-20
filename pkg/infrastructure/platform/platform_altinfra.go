@@ -6,8 +6,11 @@ package platform
 import (
 	"fmt"
 
+	configv1 "github.com/openshift/api/config/v1"
 	"github.com/openshift/installer/pkg/infrastructure"
 	"github.com/openshift/installer/pkg/infrastructure/aws"
+	azureinfra "github.com/openshift/installer/pkg/infrastructure/azure"
+	"github.com/openshift/installer/pkg/infrastructure/clusterapi"
 	awstypes "github.com/openshift/installer/pkg/types/aws"
 	azuretypes "github.com/openshift/installer/pkg/types/azure"
 	"github.com/openshift/installer/pkg/types/featuregates"
@@ -20,8 +23,10 @@ func ProviderForPlatform(platform string, fg featuregates.FeatureGate) (infrastr
 	case awstypes.Name:
 		return aws.InitializeProvider(), nil
 	case azuretypes.Name:
-		panic("not implemented")
-		return nil, nil
+		if fg.Enabled(configv1.FeatureGateClusterAPIInstall) {
+			return clusterapi.InitializeProvider(azureinfra.CAPIInfraHelper{}), nil
+		}
+		return azure.InitializeProvider(), nil
 	case vspheretypes.Name:
 		panic("not implemented")
 		return nil, nil

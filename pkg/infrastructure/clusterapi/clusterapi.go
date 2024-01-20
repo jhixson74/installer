@@ -296,7 +296,7 @@ func (d DefaultCAPIProvider) PreProvision(in PreProvisionInput) error {
 
 // Ignition provides the default CAPI provider implementation for generating ignition secrets.
 // It places the bootstrap and control plane ignition in secrets.
-func (d DefaultCAPIProvider) Ignition(in IgnitionInput) ([]client.Object, error) {
+func DefaultIgnition(in IgnitionInput) ([]client.Object, error) {
 	logrus.Debugf("Using default ignition secret generation")
 	ignSecrets := []client.Object{}
 	masterIgn := string(in.MasterIgnData)
