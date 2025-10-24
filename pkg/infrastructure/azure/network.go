@@ -599,8 +599,7 @@ func deepCopy(src, dst interface{}) error {
 }
 
 func associateVMToBackendPools(ctx context.Context, in vmInput) error {
-	var ipv4BackendAddressPools, ipv6BackendAddressPools []*armnetwork.BackendAddressPool
-	var backendAddressPools [4]armnetwork.BackendAddressPool
+	var ipv4BackendAddressPoolIds, ipv6BackendAddressPoolIds []*string
 	var backendAddressPoolName string
 
 	lbBackendAddressPoolsClient := in.networkClientFactory.NewLoadBalancerBackendAddressPoolsClient()
@@ -617,8 +616,7 @@ func associateVMToBackendPools(ctx context.Context, in vmInput) error {
 	if err != nil {
 		return fmt.Errorf("failed to get backend address pool %s: %", backendAddressPoolName, err)
 	}
-	deepCopy(&resp.BackendAddressPool, &backendAddressPools[0])
-	ipv4BackendAddressPools = append(ipv4BackendAddressPools, &backendAddressPools[0])
+	ipv4BackendAddressPoolIds = append(ipv4BackendAddressPoolIds, resp.BackendAddressPool.ID)
 
 	backendAddressPoolName = fmt.Sprintf("%s-outbound-lb-outboundBackendPool", in.infraID)
 	resp, err = lbBackendAddressPoolsClient.Get(ctx,
@@ -630,8 +628,7 @@ func associateVMToBackendPools(ctx context.Context, in vmInput) error {
 	if err != nil {
 		return fmt.Errorf("failed to get backend address pool %s: %", backendAddressPoolName, err)
 	}
-	deepCopy(&resp.BackendAddressPool, &backendAddressPools[1])
-	ipv4BackendAddressPools = append(ipv4BackendAddressPools, &backendAddressPools[1])
+	ipv4BackendAddressPoolIds = append(ipv4BackendAddressPoolIds, resp.BackendAddressPool.ID)
 
 	// Get the IPv6 backend address pools
 	backendAddressPoolName = fmt.Sprintf("%s-ipv6", in.infraID)
@@ -644,8 +641,7 @@ func associateVMToBackendPools(ctx context.Context, in vmInput) error {
 	if err != nil {
 		return fmt.Errorf("failed to get backend address pool %s: %", backendAddressPoolName, err)
 	}
-	deepCopy(&resp.BackendAddressPool, &backendAddressPools[2])
-	ipv6BackendAddressPools = append(ipv6BackendAddressPools, &backendAddressPools[2])
+	ipv6BackendAddressPoolIds = append(ipv6BackendAddressPoolIds, resp.BackendAddressPool.ID)
 
 	loadBalancerName = fmt.Sprintf("%s-internal", in.infraID)
 	backendAddressPoolName = fmt.Sprintf("%s-internal-ipv6", in.infraID)
@@ -658,8 +654,7 @@ func associateVMToBackendPools(ctx context.Context, in vmInput) error {
 	if err != nil {
 		return fmt.Errorf("failed to get backend address pool %s: %", backendAddressPoolName, err)
 	}
-	deepCopy(&resp.BackendAddressPool, &backendAddressPools[3])
-	ipv6BackendAddressPools = append(ipv6BackendAddressPools, &backendAddressPools[3])
+	ipv6BackendAddressPoolIds = append(ipv6BackendAddressPoolIds, resp.BackendAddressPool.ID)
 
 	for _, id := range in.ids {
 		vmName := path.Base(id)
@@ -678,21 +673,21 @@ func associateVMToBackendPools(ctx context.Context, in vmInput) error {
 			for _, ipConfig := range nic.Properties.IPConfigurations {
 				logrus.Debugf("XXX: nicName=%s ipConfig.Name=%s vmName=%s", nicName, *ipConfig.Name, vmName)
 				if *ipConfig.Properties.PrivateIPAddressVersion == armnetwork.IPVersionIPv4 {
-					for _, pool := range ipv4BackendAddressPools {
+					for _, poolId := range ipv4BackendAddressPoolIds {
 						ipConfig.Properties.LoadBalancerBackendAddressPools = append(
 							ipConfig.Properties.LoadBalancerBackendAddressPools,
 							[]*armnetwork.BackendAddressPool{{
-								ID: pool.ID,
+								ID: poolId,
 							}}...,
 						)
 					}
 
 				} else if *ipConfig.Properties.PrivateIPAddressVersion == armnetwork.IPVersionIPv6 {
-					for _, pool := range ipv6BackendAddressPools {
+					for _, poolId := range ipv6BackendAddressPoolIds {
 						ipConfig.Properties.LoadBalancerBackendAddressPools = append(
 							ipConfig.Properties.LoadBalancerBackendAddressPools,
 							[]*armnetwork.BackendAddressPool{{
-								ID: pool.ID,
+								ID: poolId,
 							}}...,
 						)
 					}
