@@ -21,7 +21,7 @@ export CGO_ENABLED=0
 MODE="${MODE:-release}"
 
 # build cluster-api binaries
-make -C cluster-api all
+make -j $(nproc) -C cluster-api all
 copy_cluster_api_to_mirror
 
 GIT_COMMIT="${SOURCE_GIT_COMMIT:-$(git rev-parse --verify 'HEAD^{commit}')}"
@@ -60,4 +60,4 @@ fi
 echo "building openshift-install"
 
 # shellcheck disable=SC2086
-go build ${GOFLAGS} -gcflags "${GCFLAGS}" -ldflags "${LDFLAGS}" -tags "${TAGS}" -o "${OUTPUT}" ./cmd/openshift-install
+go build -p $(nproc) ${GOFLAGS} -gcflags "${GCFLAGS}" -ldflags "${LDFLAGS}" -tags "${TAGS}" -o "${OUTPUT}" ./cmd/openshift-install
