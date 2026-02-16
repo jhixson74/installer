@@ -32,16 +32,66 @@ import (
 // GenerateClusterAssets generates the manifests for the cluster-api.
 func GenerateClusterAssets(installConfig *installconfig.InstallConfig, clusterID *installconfig.ClusterID) (*capiutils.GenerateClusterAssetsOutput, error) {
 	manifests := []*asset.RuntimeFile{}
-	mainCIDR := capiutils.CIDRFromInstallConfig(installConfig).String()
+	resourceGroup := installConfig.Config.Platform.Azure.ClusterResourceGroupName(clusterID.InfraID)
+	controlPlaneSubnet := installConfig.Config.Platform.Azure.ControlPlaneSubnetName(clusterID.InfraID)
 	computeSubnet := installConfig.Config.Platform.Azure.ComputeSubnetName(clusterID.InfraID)
+	networkSecurityGroup := installConfig.Config.Platform.Azure.NetworkSecurityGroupName(clusterID.InfraID)
+	securityGroup := capz.SecurityGroup{Name: networkSecurityGroup}
+
+	CIDRs := capiutils.CIDRsFromInstallConfig(installConfig)
+	addressFamilySubnets, err := getAddressFamilySubnets(CIDRs)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to split CIDRs into subnets")
+	}
+
+	securityRule := capz.SecurityRule{
+		Name:             "apiserver_in",
+		Protocol:         capz.SecurityGroupProtocolTCP,
+		Direction:        capz.SecurityRuleDirectionInbound,
+		Priority:         100,
+		SourcePorts:      ptr.To("*"),
+		DestinationPorts: ptr.To("6443"),
+		Source:           ptr.To("*"),
+		Destination:      ptr.To("*"),
+		Action:           capz.SecurityRuleActionAllow,
+	}
+
+	// If we are using Internal publishing, we need a security rule for each CIDR
+	var securityRules []capz.SecurityRule
+	var securityRulePriority int32 = 100
+	if addressFamilySubnets.IPv4Count() > 0 && installConfig.Config.Publish == types.InternalPublishingStrategy {
+		for i := 0; i < addressFamilySubnets.IPv4Count(); i++ {
+			ipv4SecurityRule := securityRule
+			ipv4SecurityRule.Name = fmt.Sprintf("apiserver_in_ipv4_%02d", i)
+			ipv4SecurityRule.Source = to.Ptr(addressFamilySubnets.GetIPv4Subnets()[i].String())
+			ipv4SecurityRule.Priority = securityRulePriority
+			securityRules = append(securityRules, ipv4SecurityRule)
+			securityRulePriority += 10
+		}
+	}
+	if addressFamilySubnets.IPv6Count() > 0 && installConfig.Config.Publish == types.InternalPublishingStrategy {
+		for i := 0; i < addressFamilySubnets.IPv6Count(); i++ {
+			ipv6SecurityRule := securityRule
+			ipv6SecurityRule.Name = fmt.Sprintf("apiserver_in_ipv6_%02d", i)
+			ipv6SecurityRule.Source = to.Ptr(addressFamilySubnets.GetIPv6Subnets()[i].String())
+			ipv6SecurityRule.Priority = securityRulePriority
+			securityRules = append(securityRules, ipv6SecurityRule)
+			securityRulePriority += 10
+		}
+	}
+	if len(securityRules) == 0 {
+		securityRules = append(securityRules, securityRule)
+	}
+	securityGroup.SecurityGroupClass.SecurityRules = securityRules
 
 	session, err := installConfig.Azure.Session()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create Azure session")
 	}
 
-	splitLength := 2
+	splitLength := 0
 	zones := []string{}
+	// This is only relevant to IPv4 - v1 NAT gateways do not support IPv6
 	if installConfig.Config.Azure.OutboundType == azure.NATGatewayMultiZoneOutboundType {
 		numZones, err := installConfig.Azure.GenerateZonesSubnetMap(installConfig.Config.Azure.Subnets, computeSubnet)
 		if err != nil {
@@ -55,12 +105,9 @@ func GenerateClusterAssets(installConfig *installconfig.InstallConfig, clusterID
 		splitLength = len(zones) + 1
 	}
 
-	subnets, err := cidr.SplitIntoSubnetsIPv4(mainCIDR, splitLength)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to split CIDR into subnets")
-	}
+	addressFamilySubnets.SplitComputeSubnet(splitLength)
+	virtualNetworkAddressPrefixes := getVirtualNetworkAddressPrefixes(CIDRs)
 
-	virtualNetworkAddressPrefixes := []string{mainCIDR}
 	// CAPZ expects the capz-system to be created.
 	azureNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "capz-system"}}
 	azureNamespace.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Namespace"))
@@ -68,45 +115,6 @@ func GenerateClusterAssets(installConfig *installconfig.InstallConfig, clusterID
 		Object: azureNamespace,
 		File:   asset.File{Filename: "00_azure-namespace.yaml"},
 	})
-
-	resourceGroup := installConfig.Config.Platform.Azure.ClusterResourceGroupName(clusterID.InfraID)
-	controlPlaneSubnet := installConfig.Config.Platform.Azure.ControlPlaneSubnetName(clusterID.InfraID)
-	networkSecurityGroup := installConfig.Config.Platform.Azure.NetworkSecurityGroupName(clusterID.InfraID)
-
-	source := "*"
-	if installConfig.Config.Publish == types.InternalPublishingStrategy {
-		source = mainCIDR
-	}
-
-	securityGroup := capz.SecurityGroup{
-		Name: networkSecurityGroup,
-		SecurityGroupClass: capz.SecurityGroupClass{
-			SecurityRules: []capz.SecurityRule{
-				{
-					Name:             "apiserver_in",
-					Protocol:         capz.SecurityGroupProtocolTCP,
-					Direction:        capz.SecurityRuleDirectionInbound,
-					Priority:         101,
-					SourcePorts:      ptr.To("*"),
-					DestinationPorts: ptr.To("6443"),
-					Source:           ptr.To(source),
-					Destination:      ptr.To("*"),
-					Action:           capz.SecurityRuleActionAllow,
-				},
-				{
-					Name:             fmt.Sprintf("%s_ssh_in", clusterID.InfraID),
-					Protocol:         capz.SecurityGroupProtocolTCP,
-					Direction:        capz.SecurityRuleDirectionInbound,
-					Priority:         220,
-					SourcePorts:      ptr.To("*"),
-					DestinationPorts: ptr.To("22"),
-					Source:           ptr.To(source),
-					Destination:      ptr.To("*"),
-					Action:           capz.SecurityRuleActionAllow,
-				},
-			},
-		},
-	}
 
 	// Setting ID on the Subnet disables natgw creation. See:
 	// https://github.com/kubernetes-sigs/cluster-api-provider-azure/blob/21479a9a4c640b43e0bef028487c522c55605d06/api/v1beta1/azurecluster_default.go#L160
@@ -123,19 +131,45 @@ func GenerateClusterAssets(installConfig *installconfig.InstallConfig, clusterID
 		nodeSubnetID = "UNKNOWN"
 	}
 
+	apiServerLBFrontendConfigName := fmt.Sprintf("%s-internal-frontEnd", clusterID.InfraID)
+	apiServerBackendPoolName := fmt.Sprintf("%s-internal", clusterID.InfraID)
 	apiServerLB := capz.LoadBalancerSpec{
 		Name: fmt.Sprintf("%s-internal", clusterID.InfraID),
 		BackendPool: capz.BackendPool{
-			Name: fmt.Sprintf("%s-internal", clusterID.InfraID),
+			//Name: fmt.Sprintf("%s-internal", clusterID.InfraID),
+			Name: apiServerBackendPoolName,
 		},
 		LoadBalancerClassSpec: capz.LoadBalancerClassSpec{
 			Type: capz.Internal,
 		},
 	}
 
+	controlPlaneBackendPoolName := fmt.Sprintf("%s-outbound-lb-outboundBackendPool", clusterID.InfraID)
 	controlPlaneOutboundLB := &capz.LoadBalancerSpec{
 		Name:             clusterID.InfraID,
 		FrontendIPsCount: to.Ptr(int32(1)),
+		BackendPool: capz.BackendPool{
+			Name: controlPlaneBackendPoolName,
+		},
+	}
+
+	// IPv6 outbound load balancer for worker subnet(s)
+	var nodeOutboundLB *capz.LoadBalancerSpec = nil
+	if addressFamilySubnets.IsDualStack() {
+		lbip6, err := getLBIP(addressFamilySubnets.GetIPv6Subnets(), installConfig)
+		if err != nil {
+			return nil, err
+		}
+
+		nodeOutboundLB = &capz.LoadBalancerSpec{
+			Name:             clusterID.InfraID,
+			FrontendIPsCount: to.Ptr(int32(1)),
+			FrontendIPs: []capz.FrontendIP{{
+				FrontendIPClass: capz.FrontendIPClass{
+					PrivateIPAddress: lbip6,
+				},
+			}},
+		}
 	}
 
 	if installConfig.Config.Platform.Azure.OutboundType == azure.UserDefinedRoutingOutboundType {
@@ -143,14 +177,14 @@ func GenerateClusterAssets(installConfig *installconfig.InstallConfig, clusterID
 	}
 
 	virtualNetworkID := ""
-	lbip, err := getLBIP(subnets, installConfig)
+	lbip4, err := getLBIP(addressFamilySubnets.GetIPv4Subnets(), installConfig)
 	if err != nil {
 		return nil, err
 	}
 	apiServerLB.FrontendIPs = []capz.FrontendIP{{
-		Name: fmt.Sprintf("%s-internal-frontEnd", clusterID.InfraID),
+		Name: apiServerLBFrontendConfigName,
 		FrontendIPClass: capz.FrontendIPClass{
-			PrivateIPAddress: lbip,
+			PrivateIPAddress: lbip4,
 		},
 	}}
 	vnetResourceGroup := installConfig.Config.Azure.ResourceGroupName
@@ -169,16 +203,24 @@ func GenerateClusterAssets(installConfig *installconfig.InstallConfig, clusterID
 		if virtualNetwork != nil {
 			virtualNetworkID = *virtualNetwork.ID
 		}
-		lbip, err := getNextAvailableIPForLoadBalancer(ctx, installConfig, lbip)
+		lbip4, err := getNextAvailableIPForLoadBalancer(ctx, installConfig, lbip4)
 		if err != nil {
 			return nil, err
 		}
+		apiServerLB.FrontendIPs[0].Name = apiServerLBFrontendConfigName
 		apiServerLB.FrontendIPs[0].FrontendIPClass = capz.FrontendIPClass{
-			PrivateIPAddress: lbip,
+			PrivateIPAddress: lbip4,
 		}
 		if virtualNetwork.AddressSpace != nil && virtualNetwork.AddressSpace.AddressPrefixes != nil {
 			virtualNetworkAddressPrefixes = append(virtualNetworkAddressPrefixes, *virtualNetwork.AddressSpace.AddressPrefixes...)
 		}
+	} else {
+		apiServerLB.FrontendIPs = []capz.FrontendIP{{
+			Name: apiServerLBFrontendConfigName,
+			FrontendIPClass: capz.FrontendIPClass{
+				PrivateIPAddress: lbip4,
+			},
+		}}
 	}
 
 	azEnv := string(installConfig.Azure.CloudName)
@@ -190,7 +232,7 @@ func GenerateClusterAssets(installConfig *installconfig.InstallConfig, clusterID
 		privateDNSZoneMode = capz.PrivateDNSZoneModeNone
 	}
 
-	subnetSpec, err := getSubnetSpec(installConfig, controlPlaneSubnet, computeSubnet, securityGroup, subnets, nodeSubnetID, clusterID.InfraID, zones)
+	subnetSpec, err := getSubnetSpec(installConfig, controlPlaneSubnet, computeSubnet, securityGroup, &addressFamilySubnets, nodeSubnetID, clusterID.InfraID, zones)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get subnets: %w", err)
 	}
@@ -230,6 +272,7 @@ func GenerateClusterAssets(installConfig *installconfig.InstallConfig, clusterID
 					},
 				},
 				APIServerLB:            &apiServerLB,
+				NodeOutboundLB:         nodeOutboundLB,
 				ControlPlaneOutboundLB: controlPlaneOutboundLB,
 				Subnets:                subnetSpec,
 				PrivateDNSZone:         &privateDNSZoneMode,
@@ -318,16 +361,52 @@ func GenerateClusterAssets(installConfig *installconfig.InstallConfig, clusterID
 		},
 	}, nil
 }
-func getSubnetSpec(installConfig *installconfig.InstallConfig, controlPlaneSubnet, computeSubnet string, securityGroup capz.SecurityGroup, subnets []*net.IPNet, nodeSubnetID string, infraID string, zones []string) ([]capz.SubnetSpec, error) {
+
+func getCIDRBlocks(subnets []*net.IPNet) ([]string, []string, []string) {
+	var controlPlaneCIDRBlocks, computeCIDRBlocks, otherCIDRBlocks []string
+
+	for i, subnet := range subnets {
+		switch i {
+		case 0:
+			controlPlaneCIDRBlocks = append(controlPlaneCIDRBlocks, subnet.String())
+		case 1:
+			computeCIDRBlocks = append(computeCIDRBlocks, subnet.String())
+		default:
+			otherCIDRBlocks = append(otherCIDRBlocks, subnet.String())
+		}
+	}
+
+	return controlPlaneCIDRBlocks, computeCIDRBlocks, otherCIDRBlocks
+}
+
+func getSubnetSpec(installConfig *installconfig.InstallConfig, controlPlaneSubnet, computeSubnet string, securityGroup capz.SecurityGroup, addressFamilySubnets *AddressFamilySubnets, nodeSubnetID string, infraID string, zones []string) ([]capz.SubnetSpec, error) {
+	ipv4Subnets := addressFamilySubnets.GetIPv4AdditionalSubnets()
+	ipv6Subnets := addressFamilySubnets.GetIPv6AdditionalSubnets()
+
+	ipv4ComputeSubnets := addressFamilySubnets.GetIPv4ComputeSubnets()
+	ipv6ComputeSubnets := addressFamilySubnets.GetIPv6ComputeSubnets()
+
+	ipv4ControlPlaneCIDRBlocks := addressFamilySubnets.GetIPv4ControlPlaneCIDRBlocks()
+	ipv6ControlPlaneCIDRBlocks := addressFamilySubnets.GetIPv6ControlPlaneCIDRBlocks()
+	controlPlaneCIDRBlocks := []string{ipv4ControlPlaneCIDRBlocks}
+	if ipv6ControlPlaneCIDRBlocks != "" {
+		controlPlaneCIDRBlocks = append(controlPlaneCIDRBlocks, ipv6ControlPlaneCIDRBlocks)
+	}
+
+	ipv4ComputeCIDRBlocks := addressFamilySubnets.GetIPv4ComputeCIDRBlocks()
+	ipv6ComputeCIDRBlocks := addressFamilySubnets.GetIPv6ComputeCIDRBlocks()
+	computeCIDRBlocks := ipv4ComputeCIDRBlocks
+	if len(ipv6ComputeCIDRBlocks) > 0 {
+		computeCIDRBlocks = append(computeCIDRBlocks, ipv6ComputeCIDRBlocks...)
+	}
+
 	// Set default control plane subnets for default installs.
 	defaultControlPlaneSubnet := capz.Subnets{
 		{
 			SubnetClassSpec: capz.SubnetClassSpec{
-				Name: controlPlaneSubnet,
-				Role: capz.SubnetControlPlane,
-				CIDRBlocks: []string{
-					subnets[0].String(),
-				},
+				Name:       controlPlaneSubnet,
+				Role:       capz.SubnetControlPlane,
+				CIDRBlocks: controlPlaneCIDRBlocks,
 			},
 			SecurityGroup: securityGroup,
 		},
@@ -335,16 +414,33 @@ func getSubnetSpec(installConfig *installconfig.InstallConfig, controlPlaneSubne
 	defaultComputeSubnetSpec := capz.SubnetSpec{
 		ID: nodeSubnetID,
 		SubnetClassSpec: capz.SubnetClassSpec{
-			Name: computeSubnet,
-			Role: capz.SubnetNode,
-			CIDRBlocks: []string{
-				subnets[1].String(),
-			},
+			Name:       computeSubnet,
+			Role:       capz.SubnetNode,
+			CIDRBlocks: computeCIDRBlocks,
 		},
 		SecurityGroup: securityGroup,
 	}
 
 	subnetSpec := []capz.SubnetSpec{}
+	subnetsCount := max(len(ipv4Subnets), len(ipv6Subnets))
+	for i := 0; i < subnetsCount; i++ {
+		spec := capz.SubnetSpec{
+			SubnetClassSpec: capz.SubnetClassSpec{
+				Name: fmt.Sprintf("subnet_%02d", i),
+				Role: capz.SubnetNode,
+			},
+		}
+		var cidrBlocks []string
+		if i < len(ipv4Subnets) {
+			cidrBlocks = append(cidrBlocks, ipv4Subnets[i].String())
+		}
+		if i < len(ipv6Subnets) {
+			cidrBlocks = append(cidrBlocks, ipv6Subnets[i].String())
+		}
+		spec.CIDRBlocks = cidrBlocks
+		subnetSpec = append(subnetSpec, spec)
+	}
+
 	hasControlPlaneSubnet := false
 	hasComputePlaneSubnet := false
 	// Add the user specified subnets to the spec.
@@ -407,11 +503,7 @@ func getSubnetSpec(installConfig *installconfig.InstallConfig, controlPlaneSubne
 	if !hasComputePlaneSubnet {
 		// For single zone, add a NAT gateway to the default value.
 		if installConfig.Config.Azure.OutboundType == azure.NATGatewayMultiZoneOutboundType {
-			for index, subnet := range subnets {
-				// The first one in subnets is the control plane subnet so ignoring.
-				if index == 0 {
-					continue
-				}
+			for index, subnet := range ipv4ComputeSubnets {
 				name := fmt.Sprintf("%s-%d", computeSubnet, index)
 				if index == 1 {
 					name = computeSubnet
@@ -429,6 +521,9 @@ func getSubnetSpec(installConfig *installconfig.InstallConfig, controlPlaneSubne
 						Zones:               []string{zones[zoneIndex]},
 					},
 					SecurityGroup: securityGroup,
+				}
+				if index < len(ipv6ComputeSubnets) {
+					specSubnet.SubnetClassSpec.CIDRBlocks = append(specSubnet.SubnetClassSpec.CIDRBlocks, ipv6ComputeSubnets[index].String())
 				}
 				zoneIndex++
 				if zoneIndex == len(zones) {
@@ -561,6 +656,409 @@ func stringifyAddressPrefixes(addressPrefixes []*net.IPNet) []string {
 		strAddressPrefixes = append(strAddressPrefixes, addressPrefix.String())
 	}
 	return strAddressPrefixes
+}
+
+type AddressFamilySubnet struct {
+	IPv4Subnet *net.IPNet
+	IPv6Subnet *net.IPNet
+	SubnetRole *capz.SubnetRole
+}
+
+type AddressFamilySubnets struct {
+	addressFamilySubnets []AddressFamilySubnet
+	length               int
+	ipv4Count            int
+	ipv6Count            int
+	// XXX: leave this for now, fix to use install-config later
+	isDualStack bool
+}
+
+func (a AddressFamilySubnets) Length() int {
+	return a.length
+}
+
+func (a AddressFamilySubnets) IPv4Count() int {
+	return a.ipv4Count
+}
+
+func (a AddressFamilySubnets) IPv6Count() int {
+	return a.ipv6Count
+}
+
+func (a AddressFamilySubnets) IsDualStack() bool {
+	return a.isDualStack
+}
+
+func (a AddressFamilySubnets) GetIPv4Subnets() []*net.IPNet {
+	var ipv4Subnets []*net.IPNet
+	for _, ipv4Subnet := range a.addressFamilySubnets {
+		if ipv4Subnet.IPv4Subnet != nil {
+			ipv4Subnets = append(ipv4Subnets, ipv4Subnet.IPv4Subnet)
+		}
+	}
+	return ipv4Subnets
+}
+
+func (a AddressFamilySubnets) GetIPv6Subnets() []*net.IPNet {
+	var ipv6Subnets []*net.IPNet
+	for _, ipv6Subnet := range a.addressFamilySubnets {
+		if ipv6Subnet.IPv6Subnet != nil {
+			ipv6Subnets = append(ipv6Subnets, ipv6Subnet.IPv6Subnet)
+		}
+	}
+	return ipv6Subnets
+}
+
+func (a AddressFamilySubnets) GetControlPlaneSubnet() AddressFamilySubnet {
+	if a.length > 0 {
+		return a.addressFamilySubnets[0]
+	}
+	return AddressFamilySubnet{}
+}
+
+func (a AddressFamilySubnets) SplitIPv4ComputeSubnets(numSubnets int) ([]*net.IPNet, error) {
+	if a.ipv4Count > 1 && numSubnets > 0 {
+		return cidr.SplitIntoSubnetsIPv4(a.GetIPv4Subnets()[1].String(), numSubnets)
+	}
+	return []*net.IPNet{}, nil
+}
+
+func (a AddressFamilySubnets) SplitIPv6ComputeSubnets(numSubnets int) ([]*net.IPNet, error) {
+	if a.ipv6Count > 1 && numSubnets > 0 {
+		return cidr.SplitIntoSubnetsIPv6(a.GetIPv6Subnets()[1].String(), numSubnets)
+	}
+	return []*net.IPNet{}, nil
+}
+
+func (a *AddressFamilySubnets) SplitComputeSubnet(numSubnets int) error {
+	if numSubnets <= 0 {
+		return nil
+	}
+
+	ipv4ComputeSubnets, err := a.SplitIPv4ComputeSubnets(numSubnets)
+	if err != nil {
+		return err
+	}
+	ipv4Count := len(ipv4ComputeSubnets)
+
+	var ipv6ComputeSubnets []*net.IPNet
+	if a.isDualStack {
+		ipv6ComputeSubnets, err = a.SplitIPv6ComputeSubnets(numSubnets)
+		if err != nil {
+			return err
+		}
+	}
+
+	var ipv6Count int
+	if a.isDualStack {
+		ipv6Count = len(ipv6ComputeSubnets)
+	}
+
+	var addressFamilySubnets []AddressFamilySubnet
+	for i, ipv4ComputeSubnet := range ipv4ComputeSubnets {
+		addressFamilySubnet := AddressFamilySubnet{
+			IPv4Subnet: ipv4ComputeSubnet,
+			SubnetRole: ptr.To(capz.SubnetNode),
+		}
+		if i < ipv6Count {
+			addressFamilySubnet.IPv6Subnet = ipv6ComputeSubnets[i]
+		}
+		addressFamilySubnets = append(addressFamilySubnets, addressFamilySubnet)
+	}
+
+	if a.length > 2 {
+		a.addressFamilySubnets = append(a.addressFamilySubnets[:1], append(addressFamilySubnets, a.addressFamilySubnets[2:]...)...)
+	} else {
+		a.addressFamilySubnets = append(a.addressFamilySubnets[:1], addressFamilySubnets...)
+	}
+
+	a.length += len(ipv4ComputeSubnets)
+	a.ipv4Count += ipv4Count
+	a.ipv6Count += ipv6Count
+
+	return nil
+}
+
+func (a AddressFamilySubnets) GetComputeSubnets() []AddressFamilySubnet {
+	var computeSubnets []AddressFamilySubnet
+
+	for _, addressFamilySubnet := range a.addressFamilySubnets {
+		if addressFamilySubnet.SubnetRole != nil && *addressFamilySubnet.SubnetRole == capz.SubnetNode {
+			computeSubnets = append(computeSubnets, addressFamilySubnet)
+		}
+	}
+
+	return computeSubnets
+}
+
+func (a AddressFamilySubnets) GetIPv4ComputeSubnets() []*net.IPNet {
+	computeSubnets := a.GetComputeSubnets()
+
+	var ipv4ComputeSubnets []*net.IPNet
+	for _, ipv4ComputeSubnet := range computeSubnets {
+		if ipv4ComputeSubnet.IPv4Subnet != nil {
+			ipv4ComputeSubnets = append(ipv4ComputeSubnets, ipv4ComputeSubnet.IPv4Subnet)
+		}
+	}
+
+	return ipv4ComputeSubnets
+}
+
+func (a AddressFamilySubnets) GetIPv6ComputeSubnets() []*net.IPNet {
+	computeSubnets := a.GetComputeSubnets()
+
+	var ipv6ComputeSubnets []*net.IPNet
+	for _, ipv6ComputeSubnet := range computeSubnets {
+		if ipv6ComputeSubnet.IPv6Subnet != nil {
+			ipv6ComputeSubnets = append(ipv6ComputeSubnets, ipv6ComputeSubnet.IPv6Subnet)
+		}
+	}
+
+	return ipv6ComputeSubnets
+}
+
+func (a AddressFamilySubnets) GetAdditionalSubnets() []AddressFamilySubnet {
+	var additionalSubnets []AddressFamilySubnet
+
+	for _, addressFamilySubnet := range a.addressFamilySubnets {
+		if addressFamilySubnet.SubnetRole == nil {
+			additionalSubnets = append(additionalSubnets, addressFamilySubnet)
+		}
+	}
+
+	return additionalSubnets
+}
+
+func (a AddressFamilySubnets) GetIPv4AdditionalSubnets() []*net.IPNet {
+	nonComputeSubnets := a.GetAdditionalSubnets()
+
+	var ipv4Subnets []*net.IPNet
+	for _, ipv4Subnet := range nonComputeSubnets {
+		if ipv4Subnet.IPv4Subnet != nil {
+			ipv4Subnets = append(ipv4Subnets, ipv4Subnet.IPv4Subnet)
+		}
+	}
+
+	return ipv4Subnets
+}
+
+func (a AddressFamilySubnets) GetIPv6AdditionalSubnets() []*net.IPNet {
+	nonComputeSubnets := a.GetAdditionalSubnets()
+
+	var ipv6Subnets []*net.IPNet
+	for _, ipv6Subnet := range nonComputeSubnets {
+		if ipv6Subnet.IPv6Subnet != nil {
+			ipv6Subnets = append(ipv6Subnets, ipv6Subnet.IPv6Subnet)
+		}
+	}
+
+	return ipv6Subnets
+}
+
+func (a AddressFamilySubnets) GetIPv4CIDRBlocks() []string {
+	var ipv4CIDRBlocks []string
+
+	for _, ipv4Subnet := range a.addressFamilySubnets {
+		if ipv4Subnet.IPv4Subnet != nil {
+			ipv4CIDRBlocks = append(ipv4CIDRBlocks, (*ipv4Subnet.IPv4Subnet).String())
+		}
+	}
+
+	return ipv4CIDRBlocks
+}
+
+func (a AddressFamilySubnets) GetIPv6CIDRBlocks() []string {
+	var ipv6CIDRBlocks []string
+
+	for _, ipv6Subnet := range a.addressFamilySubnets {
+		if ipv6Subnet.IPv6Subnet != nil {
+			ipv6CIDRBlocks = append(ipv6CIDRBlocks, (*ipv6Subnet.IPv6Subnet).String())
+		}
+	}
+
+	return ipv6CIDRBlocks
+}
+
+func (a AddressFamilySubnets) GetIPv4ControlPlaneCIDRBlocks() string {
+	ipv4Subnet := a.GetControlPlaneSubnet()
+	if ipv4Subnet.IPv4Subnet != nil {
+		return (*ipv4Subnet.IPv4Subnet).String()
+	}
+	return ""
+}
+
+func (a AddressFamilySubnets) GetIPv6ControlPlaneCIDRBlocks() string {
+	ipv6Subnet := a.GetControlPlaneSubnet()
+	if ipv6Subnet.IPv6Subnet != nil {
+		return (*ipv6Subnet.IPv6Subnet).String()
+	}
+	return ""
+}
+
+func (a AddressFamilySubnets) GetIPv4ComputeCIDRBlocks() []string {
+	var ipv4CIDRBlocks []string
+
+	for _, computeSubnet := range a.GetComputeSubnets() {
+		if computeSubnet.IPv4Subnet != nil {
+			ipv4CIDRBlocks = append(ipv4CIDRBlocks, (*computeSubnet.IPv4Subnet).String())
+		}
+	}
+
+	return ipv4CIDRBlocks
+}
+
+func (a AddressFamilySubnets) GetIPv6ComputeCIDRBlocks() []string {
+	var ipv6CIDRBlocks []string
+
+	for _, computeSubnet := range a.GetComputeSubnets() {
+		if computeSubnet.IPv6Subnet != nil {
+			ipv6CIDRBlocks = append(ipv6CIDRBlocks, (*computeSubnet.IPv6Subnet).String())
+		}
+	}
+
+	return ipv6CIDRBlocks
+}
+
+func (a AddressFamilySubnets) GetIPv4AdditionalCIDRBlocks() []string {
+	nonComputeSubnets := a.GetAdditionalSubnets()
+
+	var ipv4CIDRBlocks []string
+	for _, nonComputeSubnet := range nonComputeSubnets {
+		if nonComputeSubnet.IPv4Subnet != nil {
+			ipv4CIDRBlocks = append(ipv4CIDRBlocks, (*nonComputeSubnet.IPv4Subnet).String())
+		}
+	}
+
+	return ipv4CIDRBlocks
+}
+
+func (a AddressFamilySubnets) GetIPv6AdditionalCIDRBlocks() []string {
+	nonComputeSubnets := a.GetAdditionalSubnets()
+
+	var ipv6CIDRBlocks []string
+	for _, nonComputeSubnet := range nonComputeSubnets {
+		if nonComputeSubnet.IPv6Subnet != nil {
+			ipv6CIDRBlocks = append(ipv6CIDRBlocks, (*nonComputeSubnet.IPv6Subnet).String())
+		}
+	}
+
+	return ipv6CIDRBlocks
+}
+
+func getAddressFamilySubnets(CIDRs []ipnet.IPNet) (AddressFamilySubnets, error) {
+	var addressFamilySubnets AddressFamilySubnets
+	var err error
+
+	// Split CIDRs into IPv4 and IPv6 CIDRs
+	var ipv4CIDRs, ipv6CIDRs []ipnet.IPNet
+	for _, CIDR := range CIDRs {
+		switch len(CIDR.IP) {
+		case net.IPv4len:
+			ipv4CIDRs = append(ipv4CIDRs, CIDR)
+		case net.IPv6len:
+			ipv6CIDRs = append(ipv6CIDRs, CIDR)
+		}
+	}
+
+	// Split IPv4 CIDRs into IPv4 subnets
+	var ipv4Subnets []*net.IPNet
+	switch len(ipv4CIDRs) {
+	case 1:
+		ipv4Subnets, err = cidr.SplitIntoSubnetsIPv4(ipv4CIDRs[0].String(), 2)
+		if err != nil {
+			return addressFamilySubnets, err
+		}
+	default:
+		for _, ipv4Cidr := range ipv4CIDRs {
+			ipv4Subnets = append(ipv4Subnets, &net.IPNet{
+				IP:   ipv4Cidr.IP,
+				Mask: ipv4Cidr.Mask,
+			})
+		}
+	}
+
+	// Split IPv6 CIDRs into IPv6 subnets
+	var ipv6Subnets []*net.IPNet
+	switch len(ipv6CIDRs) {
+	case 1:
+		ipv6Subnets, err = cidr.SplitIntoSubnetsIPv6(ipv6CIDRs[0].String(), 2)
+		if err != nil {
+			return addressFamilySubnets, err
+		}
+	default:
+		for _, ipv6Cidr := range ipv6CIDRs {
+			ipv6Subnets = append(ipv6Subnets, &net.IPNet{
+				IP:   ipv6Cidr.IP,
+				Mask: ipv6Cidr.Mask,
+			})
+		}
+	}
+
+	for i, ipv4Subnet := range ipv4Subnets {
+		addressFamilySubnet := AddressFamilySubnet{
+			IPv4Subnet: ipv4Subnet,
+			SubnetRole: nil,
+		}
+		switch i {
+		case 0:
+			addressFamilySubnet.SubnetRole = ptr.To(capz.SubnetControlPlane)
+		case 1:
+			addressFamilySubnet.SubnetRole = ptr.To(capz.SubnetNode)
+		}
+		if i < len(ipv6Subnets) {
+			addressFamilySubnet.IPv6Subnet = ipv6Subnets[i]
+			addressFamilySubnets.isDualStack = true
+			addressFamilySubnets.ipv6Count++
+		}
+		addressFamilySubnets.addressFamilySubnets = append(addressFamilySubnets.addressFamilySubnets, addressFamilySubnet)
+		addressFamilySubnets.ipv4Count++
+		addressFamilySubnets.length++
+	}
+
+	return addressFamilySubnets, err
+}
+
+func getIPFamilyCIDRs(CIDRs []ipnet.IPNet, ipFamilyLength int) (ipFamilyCIDRs []ipnet.IPNet) {
+	for _, CIDR := range CIDRs {
+		if len(CIDR.IP) == ipFamilyLength {
+			ipFamilyCIDRs = append(ipFamilyCIDRs, CIDR)
+		}
+	}
+	return
+}
+
+func getIPFamilySubnets(CIDRs []ipnet.IPNet, ipFamilyLength int) (ipFamilySubnets []*net.IPNet, err error) {
+	switch len(CIDRs) {
+	case 1:
+		switch ipFamilyLength {
+		case net.IPv4len:
+			ipFamilySubnets, err = cidr.SplitIntoSubnetsIPv4(CIDRs[0].String(), 2)
+		case net.IPv6len:
+			ipFamilySubnets, err = cidr.SplitIntoSubnetsIPv6(CIDRs[0].String(), 2)
+		}
+	default:
+		for _, ipFamilyCIDR := range CIDRs {
+			ipFamilySubnets = append(ipFamilySubnets, &net.IPNet{
+				IP:   ipFamilyCIDR.IP,
+				Mask: ipFamilyCIDR.Mask,
+			})
+		}
+	}
+	return
+}
+
+func getVirtualNetworkAddressPrefixes(CIDRs []ipnet.IPNet) []string {
+	var virtualNetworkAddressPrefixes []string
+	for _, CIDR := range CIDRs {
+		virtualNetworkAddressPrefixes = append(virtualNetworkAddressPrefixes, CIDR.String())
+	}
+
+	// XXX: I don't know if this is necessary, but copying it over for now
+	// XXX: 10.1.0.0 is node CIDR, where does 10.2.0.0 come from?
+	virtualNetworkAddressPrefixes = append(virtualNetworkAddressPrefixes, "10.1.0.0/16")
+	virtualNetworkAddressPrefixes = append(virtualNetworkAddressPrefixes, "10.2.0.0/16")
+
+	return virtualNetworkAddressPrefixes
 }
 
 func getIPWithinCIDR(subnets []*net.IPNet, ip string) string {
