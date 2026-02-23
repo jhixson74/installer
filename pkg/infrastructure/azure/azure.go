@@ -65,6 +65,7 @@ type Provider struct {
 	clientOptions         *arm.ClientOptions
 	computeClientOptions  *arm.ClientOptions
 	publicLBIP            string
+	publicLBIPv6          string
 }
 
 var _ clusterapi.InfraReadyProvider = (*Provider)(nil)
@@ -488,7 +489,7 @@ func (p *Provider) InfraReady(ctx context.Context, in clusterapi.InfraReadyInput
 		region:                 platform.Region,
 		resourceGroup:          resourceGroupName,
 		subscriptionID:         session.Credentials.SubscriptionID,
-		frontendIPConfigName:   "public-lb-ip-v4",
+		frontendIPConfigName:   "public-lb-ip",
 		backendAddressPoolName: fmt.Sprintf("%s-internal", in.InfraID),
 		idPrefix: fmt.Sprintf("subscriptions/%s/resourceGroups/%s/providers/Microsoft.Network/loadBalancers",
 			session.Credentials.SubscriptionID,
@@ -507,6 +508,7 @@ func (p *Provider) InfraReady(ctx context.Context, in clusterapi.InfraReadyInput
 	var lbBaps []*armnetwork.BackendAddressPool
 	var extLBFQDN string
 	if in.InstallConfig.Config.PublicAPI() {
+		var publicIPv6 *armnetwork.PublicIPAddress
 		publicIP, err := createPublicIP(ctx, &pipInput{
 			name:          fmt.Sprintf("%s-pip-v4", in.InfraID),
 			infraID:       in.InfraID,
@@ -514,23 +516,39 @@ func (p *Provider) InfraReady(ctx context.Context, in clusterapi.InfraReadyInput
 			resourceGroup: resourceGroupName,
 			pipClient:     networkClientFactory.NewPublicIPAddressesClient(),
 			tags:          p.Tags,
+			ipversion:     armnetwork.IPVersionIPv4,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create public ip: %w", err)
 		}
 		logrus.Debugf("created public ip: %s", *publicIP.ID)
+		if in.InstallConfig.Config.Azure.IPFamily.DualStackEnabled() {
+			publicIPv6, err = createPublicIP(ctx, &pipInput{
+				name:          fmt.Sprintf("%s-pip-v6", in.InfraID),
+				infraID:       in.InfraID,
+				region:        in.InstallConfig.Config.Azure.Region,
+				resourceGroup: resourceGroupName,
+				pipClient:     networkClientFactory.NewPublicIPAddressesClient(),
+				tags:          p.Tags,
+				ipversion:     armnetwork.IPVersionIPv6,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to create public ipv6: %w", err)
+			}
+			logrus.Debugf("created public ip v6: %s", *publicIPv6.ID)
+		}
 
 		lbInput.loadBalancerName = in.InfraID
 		lbInput.backendAddressPoolName = in.InfraID
 
 		var loadBalancer *armnetwork.LoadBalancer
 		if platform.OutboundType == aztypes.UserDefinedRoutingOutboundType {
-			loadBalancer, err = createAPILoadBalancer(ctx, publicIP, lbInput)
+			loadBalancer, err = createAPILoadBalancer(ctx, publicIP, publicIPv6, lbInput)
 			if err != nil {
 				return fmt.Errorf("failed to create API load balancer: %w", err)
 			}
 		} else {
-			loadBalancer, err = updateOutboundLoadBalancerToAPILoadBalancer(ctx, publicIP, lbInput)
+			loadBalancer, err = updateOutboundLoadBalancerToAPILoadBalancer(ctx, publicIP, publicIPv6, lbInput)
 			if err != nil {
 				return fmt.Errorf("failed to update external load balancer: %w", err)
 			}
@@ -540,6 +558,9 @@ func (p *Provider) InfraReady(ctx context.Context, in clusterapi.InfraReadyInput
 		lbBaps = loadBalancer.Properties.BackendAddressPools
 		extLBFQDN = *publicIP.Properties.DNSSettings.Fqdn
 		p.publicLBIP = *publicIP.Properties.IPAddress
+		if in.InstallConfig.Config.Azure.IPFamily.DualStackEnabled() {
+			p.publicLBIPv6 = *publicIPv6.Properties.IPAddress
+		}
 	}
 
 	if (in.InstallConfig.Config.Azure.OutboundType == aztypes.NATGatewayMultiZoneOutboundType ||
@@ -651,6 +672,44 @@ func (p *Provider) PostProvision(ctx context.Context, in clusterapi.PostProvisio
 		})
 		if err != nil {
 			return fmt.Errorf("failed to associate inbound nat rule to interface: %w", err)
+		}
+
+		// For dual-stack, create IPv6 inbound NAT rule for SSH access to bootstrap
+		// Note: API access (port 6443) uses the load balancing rule, not a NAT rule
+		if in.InstallConfig.Config.Azure.IPFamily.DualStackEnabled() {
+			sshRuleNameV6 := fmt.Sprintf("%s_ssh_in_v6", in.InfraID)
+			frontendIPConfigNameV6 := "public-lb-ip-v6"
+			frontendIPConfigIDV6 := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Network/loadBalancers/%s/frontendIPConfigurations/%s",
+				subscriptionID,
+				p.ResourceGroupName,
+				loadBalancerName,
+				frontendIPConfigNameV6,
+			)
+
+			inboundNatRuleV6, err := addInboundNatRuleToLoadBalancer(ctx, &inboundNatRuleInput{
+				resourceGroupName:    p.ResourceGroupName,
+				loadBalancerName:     loadBalancerName,
+				frontendIPConfigID:   frontendIPConfigIDV6,
+				inboundNatRuleName:   sshRuleNameV6,
+				inboundNatRulePort:   22,
+				networkClientFactory: p.NetworkClientFactory,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to create IPv6 SSH inbound nat rule: %w", err)
+			}
+			_, err = associateInboundNatRuleToInterface(ctx, &inboundNatRuleInput{
+				resourceGroupName:    p.ResourceGroupName,
+				loadBalancerName:     loadBalancerName,
+				bootstrapNicName:     fmt.Sprintf("%s-bootstrap-nic", in.InfraID),
+				frontendIPConfigID:   frontendIPConfigIDV6,
+				inboundNatRuleID:     *inboundNatRuleV6.ID,
+				inboundNatRuleName:   sshRuleNameV6,
+				inboundNatRulePort:   22,
+				networkClientFactory: p.NetworkClientFactory,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to associate IPv6 SSH inbound nat rule to interface: %w", err)
+			}
 		}
 	}
 
