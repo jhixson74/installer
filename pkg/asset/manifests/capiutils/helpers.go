@@ -21,7 +21,7 @@ func CIDRFromInstallConfig(installConfig *installconfig.InstallConfig) *ipnet.IP
 // CIDRsFromInstallConfig generates multiple CIDRs from the install config,
 // or returns the default IPv4 CIDR if none is found.
 func CIDRsFromInstallConfig(installConfig *installconfig.InstallConfig) []ipnet.IPNet {
-	var cidrs []ipnet.IPNet
+	cidrs := make([]ipnet.IPNet, 0)
 	for _, machineNetwork := range installConfig.Config.MachineNetwork {
 		cidrs = append(cidrs, machineNetwork.CIDR)
 	}
