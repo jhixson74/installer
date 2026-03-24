@@ -412,7 +412,7 @@ func (p *Provider) InfraReady(ctx context.Context, in clusterapi.InfraReadyInput
 		loadBalancerName:       fmt.Sprintf("%s-internal", in.InfraID),
 		infraID:                in.InfraID,
 		region:                 platform.Region,
-		resourceGroup:          resourceGroupName,
+		resourceGroupName:      resourceGroupName,
 		subscriptionID:         session.Credentials.SubscriptionID,
 		frontendIPConfigName:   "public-lb-ip-v4",
 		backendAddressPoolName: fmt.Sprintf("%s-internal", in.InfraID),
@@ -433,39 +433,165 @@ func (p *Provider) InfraReady(ctx context.Context, in clusterapi.InfraReadyInput
 	var lbBaps []*armnetwork.BackendAddressPool
 	var extLBFQDN string
 	if in.InstallConfig.Config.PublicAPI() {
-		publicIP, err := createPublicIP(ctx, &pipInput{
-			name:          fmt.Sprintf("%s-pip-v4", in.InfraID),
-			infraID:       in.InfraID,
-			region:        in.InstallConfig.Config.Azure.Region,
-			resourceGroup: resourceGroupName,
-			pipClient:     networkClientFactory.NewPublicIPAddressesClient(),
-			tags:          p.Tags,
+		publicIPv4, err := createPublicIP(ctx, &pipInput{
+			name:              fmt.Sprintf("%s-pip-v4", in.InfraID),
+			infraID:           in.InfraID,
+			region:            in.InstallConfig.Config.Azure.Region,
+			resourceGroupName: resourceGroupName,
+			ipVersion:         armnetwork.IPVersionIPv4,
+			pipClient:         networkClientFactory.NewPublicIPAddressesClient(),
+			tags:              p.Tags,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to create public ip: %w", err)
+			return fmt.Errorf("failed to create public ipv4 address: %w", err)
 		}
-		logrus.Debugf("created public ip: %s", *publicIP.ID)
+		logrus.Debugf("created public ipv4 address: %s", *publicIPv4.ID)
+
+		var publicIPv6 *armnetwork.PublicIPAddress
+		if in.InstallConfig.Config.Azure.IPFamily.DualStackEnabled() {
+			publicIPv6, err = createPublicIP(ctx, &pipInput{
+				name:              fmt.Sprintf("%s-pip-v6", in.InfraID),
+				infraID:           in.InfraID,
+				region:            in.InstallConfig.Config.Azure.Region,
+				resourceGroupName: resourceGroupName,
+				ipVersion:         armnetwork.IPVersionIPv6,
+				pipClient:         networkClientFactory.NewPublicIPAddressesClient(),
+				tags:              p.Tags,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to create public ipv6 address: %w", err)
+			}
+			logrus.Debugf("created public ipv6 address: %s", *publicIPv6.ID)
+		}
 
 		lbInput.loadBalancerName = in.InfraID
 		lbInput.backendAddressPoolName = in.InfraID
 
 		var loadBalancer *armnetwork.LoadBalancer
 		if platform.OutboundType == aztypes.UserDefinedRoutingOutboundType {
-			loadBalancer, err = createAPILoadBalancer(ctx, publicIP, lbInput)
+			loadBalancer, err = createAPILoadBalancer(ctx, publicIPv4, lbInput)
 			if err != nil {
 				return fmt.Errorf("failed to create API load balancer: %w", err)
 			}
 		} else {
-			loadBalancer, err = updateOutboundLoadBalancerToAPILoadBalancer(ctx, publicIP, lbInput)
+			/*
+				loadBalancer, err = updateOutboundLoadBalancerToAPILoadBalancer(ctx, publicIPv4, lbInput)
+				if err != nil {
+					return fmt.Errorf("failed to update external load balancer: %w", err)
+				}
+			*/
+
+			lbInput.frontendIPConfigName = "public-lb-ip-v4"
+			logrus.Debugf("XXX: adding frontend IPv4 configuration to API load balancer")
+			_, err := addFrontendIPConfigurationToLoadBalancer(ctx,
+				&armnetwork.FrontendIPConfiguration{
+					Name: to.Ptr(lbInput.frontendIPConfigName),
+					Properties: &armnetwork.FrontendIPConfigurationPropertiesFormat{
+						PrivateIPAddressVersion:   to.Ptr(armnetwork.IPVersionIPv4),
+						PrivateIPAllocationMethod: to.Ptr(armnetwork.IPAllocationMethodDynamic),
+						PublicIPAddress:           publicIPv4,
+					},
+				},
+				lbInput,
+			)
 			if err != nil {
-				return fmt.Errorf("failed to update external load balancer: %w", err)
+				return fmt.Errorf("failed to add frontend IPv4 configuration to API load balancer: %w", err)
+			}
+
+			lbInput.backendAddressPoolName = fmt.Sprintf("%s-v4", in.InfraID)
+			logrus.Debugf("XXX: adding IPv4 backend address pool to API load balancer")
+			_, err = addBackendAddressPoolToLoadBalancer(ctx,
+				&armnetwork.BackendAddressPool{
+					Name: to.Ptr(lbInput.backendAddressPoolName),
+				},
+				lbInput,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to add IPv4 backend address pool to API load balancer: %w", err)
+			}
+
+			logrus.Debugf("XXX: adding API probe to API load balancer")
+			extApiProbe := apiProbe()
+			_, err = addProbeToLoadBalancer(ctx, extApiProbe, lbInput)
+			if err != nil {
+				return fmt.Errorf("failed to add mcs probe to internal load balancer: %w", err)
+			}
+
+			logrus.Debugf("XXX: adding API load balancer rule probe to API load balancer")
+			loadBalancer, err = addLoadBalancingRuleToLoadBalancer(ctx,
+				apiRule(&lbRuleInput{
+					loadBalancerName:       lbInput.loadBalancerName,
+					probeName:              *extApiProbe.Name,
+					ruleName:               "api-v4",
+					idPrefix:               lbInput.idPrefix,
+					frontendIPConfigName:   lbInput.frontendIPConfigName,
+					backendAddressPoolName: lbInput.backendAddressPoolName,
+				}),
+				lbInput)
+			if err != nil {
+				return fmt.Errorf("failed to update API load balancer: %w", err)
+			}
+
+			if in.InstallConfig.Config.Azure.IPFamily.DualStackEnabled() {
+
+				lbInput.frontendIPConfigName = "public-lb-ip-v6"
+				logrus.Debugf("XXX: adding frontend IPv6 configuration to API load balancer")
+				_, err := addFrontendIPConfigurationToLoadBalancer(ctx,
+					&armnetwork.FrontendIPConfiguration{
+						Name: to.Ptr(lbInput.frontendIPConfigName),
+						Properties: &armnetwork.FrontendIPConfigurationPropertiesFormat{
+							PrivateIPAddressVersion:   to.Ptr(armnetwork.IPVersionIPv6),
+							PrivateIPAllocationMethod: to.Ptr(armnetwork.IPAllocationMethodDynamic),
+							PublicIPAddress:           publicIPv6,
+						},
+					},
+					lbInput,
+				)
+				if err != nil {
+					return fmt.Errorf("failed to add frontend IP configuration to API load balancer: %w", err)
+				}
+
+				lbInput.backendAddressPoolName = fmt.Sprintf("%s-v6", in.InfraID)
+				logrus.Debugf("XXX: adding backend address pool to API load balancer")
+				_, err = addBackendAddressPoolToLoadBalancer(ctx,
+					&armnetwork.BackendAddressPool{
+						Name: to.Ptr(lbInput.backendAddressPoolName),
+					},
+					lbInput,
+				)
+				if err != nil {
+					return fmt.Errorf("failed to add backend address pool to API load balancer: %w", err)
+				}
+
+				logrus.Debugf("XXX: adding API probe to API load balancer")
+				extApiProbe := apiProbe()
+				_, err = addProbeToLoadBalancer(ctx, extApiProbe, lbInput)
+				if err != nil {
+					return fmt.Errorf("failed to add mcs probe to internal load balancer: %w", err)
+				}
+
+				logrus.Debugf("XXX: adding API load balancer rule probe to API load balancer")
+				loadBalancer, err = addLoadBalancingRuleToLoadBalancer(ctx,
+					apiRule(&lbRuleInput{
+						loadBalancerName:       lbInput.loadBalancerName,
+						probeName:              *extApiProbe.Name,
+						ruleName:               "api-v6",
+						idPrefix:               lbInput.idPrefix,
+						frontendIPConfigName:   lbInput.frontendIPConfigName,
+						backendAddressPoolName: lbInput.backendAddressPoolName,
+					}),
+					lbInput)
+				if err != nil {
+					return fmt.Errorf("failed to update API load balancer: %w", err)
+				}
+
 			}
 		}
 
 		logrus.Debugf("updated external load balancer: %s", *loadBalancer.ID)
 		lbBaps = loadBalancer.Properties.BackendAddressPools
-		extLBFQDN = *publicIP.Properties.DNSSettings.Fqdn
-		p.publicLBIP = *publicIP.Properties.IPAddress
+		extLBFQDN = *publicIPv4.Properties.DNSSettings.Fqdn
+		p.publicLBIP = *publicIPv4.Properties.IPAddress
 	}
 
 	if (in.InstallConfig.Config.Azure.OutboundType == aztypes.NATGatewayMultiZoneOutboundType ||
@@ -525,7 +651,7 @@ func (p *Provider) PostProvision(ctx context.Context, in clusterapi.PostProvisio
 
 		vmInput := &vmInput{
 			infraID:             in.InfraID,
-			resourceGroup:       p.ResourceGroupName,
+			resourceGroupName:   p.ResourceGroupName,
 			vmClient:            vmClient,
 			nicClient:           p.NetworkClientFactory.NewInterfacesClient(),
 			ids:                 vmIDs,
