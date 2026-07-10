@@ -152,3 +152,5 @@ require (
 	sigs.k8s.io/structured-merge-diff/v4 v4.6.0 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
+
+replace sigs.k8s.io/cluster-api-provider-azure => jhixson74/cluster-api-provider-azure v1.26.1-0.20260710025201-319524c6de86

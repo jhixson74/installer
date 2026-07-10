@@ -387,8 +387,10 @@ replace sigs.k8s.io/controller-runtime => sigs.k8s.io/controller-runtime v0.19.3
 // See: https://issues.redhat.com/browse/CORS-4262
 replace (
 	github.com/nutanix-cloud-native/cluster-api-provider-nutanix => github.com/nutanix-cloud-native/cluster-api-provider-nutanix v1.7.2-0.20251007022949-442bc2ebe286
-	sigs.k8s.io/cluster-api-provider-azure => github.com/mboersma/cluster-api-provider-azure v0.3.1-0.20251030205607-3161b9cc8d3e
+//sigs.k8s.io/cluster-api-provider-azure => github.com/mboersma/cluster-api-provider-azure v0.3.1-0.20251030205607-3161b9cc8d3e
 )
 
 // XXX: Temporary for Azure IL6 work - Remove when complete
-replace github.com/openshift/api => github.com/jhixson74/api v0.0.0-20260701033618-bed4bbaede47
+replace github.com/openshift/api => github.com/jhixson74/api v0.0.0-20260708221825-57814bd9111f
+
+replace sigs.k8s.io/cluster-api-provider-azure => github.com/jhixson74/cluster-api-provider-azure v1.26.1-0.20260710025201-319524c6de86
