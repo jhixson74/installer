@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -256,9 +257,6 @@ func (p *Provider) InfraReady(ctx context.Context, in clusterapi.InfraReadyInput
 	containerName := "vhd"
 	blobName := fmt.Sprintf("rhcos%s.vhd", randomString(5))
 
-	storageURL := fmt.Sprintf("https://%s.blob.%s", storageAccountName, session.Environment.StorageEndpointSuffix)
-	blobURL := fmt.Sprintf("%s/%s/%s", storageURL, containerName, blobName)
-
 	var storageAccount *armstorage.Account
 	var storageClientFactory *armstorage.ClientFactory
 	var storageAccountKeys []armstorage.AccountKey
@@ -292,6 +290,12 @@ func (p *Provider) InfraReady(ctx context.Context, in clusterapi.InfraReadyInput
 		storageAccountKeys = createStorageAccountOutput.StorageAccountKeys
 
 		logrus.Debugf("StorageAccount.ID=%s", *storageAccount.ID)
+	}
+
+	storageURL := *storageAccount.Properties.PrimaryEndpoints.Blob
+	blobURL, err := url.JoinPath(storageURL, containerName, blobName)
+	if err != nil {
+		return err
 	}
 
 	// Create a managed image, which is used for OKD or confidential VMs on OCP.
