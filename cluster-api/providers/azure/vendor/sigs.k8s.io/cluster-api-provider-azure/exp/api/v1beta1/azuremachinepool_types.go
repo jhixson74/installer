@@ -19,7 +19,7 @@ package v1beta1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 
 	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1beta1"
 )
@@ -100,6 +100,14 @@ type (
 		// VMExtensions specifies a list of extensions to be added to the scale set.
 		// +optional
 		VMExtensions []infrav1.VMExtension `json:"vmExtensions,omitempty"`
+
+		// DisableVMBootstrapExtension specifies whether the VM bootstrap extension should be disabled on the virtual machine scale set.
+		// Use this setting if you want to disable only the bootstrapping extension and not all extensions.
+		// If unset, CAPZ treats this as true during reconciliation, meaning the bootstrap extension is not installed on new VMSSes.
+		// Set to false to opt back in to the bootstrap extension. Changing this field on an existing AzureMachinePool only takes
+		// effect on the next model-changing update of the underlying VMSS (e.g. image, identity, zones, or SKU change).
+		// +optional
+		DisableVMBootstrapExtension *bool `json:"disableVMBootstrapExtension,omitempty"`
 
 		// NetworkInterfaces specifies a list of network interface configurations.
 		// If left unspecified, the VM will get a single network interface with a
@@ -184,7 +192,6 @@ type (
 		// Type of deployment. Currently the only supported strategy is RollingUpdate
 		// +optional
 		// +kubebuilder:validation:Enum=RollingUpdate
-		// +optional
 		// +kubebuilder:default=RollingUpdate
 		Type AzureMachinePoolDeploymentStrategyType `json:"type,omitempty"`
 
@@ -309,7 +316,7 @@ type (
 
 		// Conditions defines current service state of the AzureMachinePool.
 		// +optional
-		Conditions clusterv1.Conditions `json:"conditions,omitempty"`
+		Conditions clusterv1beta1.Conditions `json:"conditions,omitempty"`
 
 		// LongRunningOperationStates saves the state for Azure long-running operations so they can be continued on the
 		// next reconciliation loop.
@@ -382,12 +389,12 @@ type (
 )
 
 // GetConditions returns the list of conditions for an AzureMachinePool API object.
-func (amp *AzureMachinePool) GetConditions() clusterv1.Conditions {
+func (amp *AzureMachinePool) GetConditions() clusterv1beta1.Conditions {
 	return amp.Status.Conditions
 }
 
 // SetConditions will set the given conditions on an AzureMachinePool object.
-func (amp *AzureMachinePool) SetConditions(conditions clusterv1.Conditions) {
+func (amp *AzureMachinePool) SetConditions(conditions clusterv1beta1.Conditions) {
 	amp.Status.Conditions = conditions
 }
 
