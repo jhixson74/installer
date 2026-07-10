@@ -605,7 +605,8 @@ func getSubnetSpec(installConfig *installconfig.InstallConfig, controlPlaneSubne
 }
 
 func getLBIP(subnets []*net.IPNet, installConfig *installconfig.InstallConfig) (string, error) {
-	lbip := capz.DefaultInternalLBIPAddress
+	//lbip := capz.DefaultInternalLBIPAddress
+	lbip := "10.0.0.100"
 	lbip = getIPWithinCIDR(subnets, lbip)
 
 	var controlPlaneSub string
