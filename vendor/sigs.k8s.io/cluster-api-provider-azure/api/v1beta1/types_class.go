@@ -48,6 +48,7 @@ type AzureClusterClassSpec struct {
 	// - GermanCloud: "AzureGermanCloud"
 	// - PublicCloud: "AzurePublicCloud"
 	// - USGovernmentCloud: "AzureUSGovernmentCloud"
+	// - USGovernmentSecret: "AzureUSSecCloud"
 	//
 	// Note that values other than the default must also be accompanied by corresponding changes to the
 	// aso-controller-settings Secret to configure ASO to refer to the non-Public cloud. ASO currently does
@@ -58,6 +59,10 @@ type AzureClusterClassSpec struct {
 	// - AZURE_RESOURCE_MANAGER_AUDIENCE
 	//
 	// See the [ASO docs] for more details.
+	//
+	// When set to "AzureUSSecCloud", the AZURE_ENVIRONMENT_FILEPATH environment
+	// variable must be set on the controller, pointing to a JSON file containing
+	// the dynamically-discovered cloud endpoints for the air-gapped environment.
 	//
 	// [ASO docs]: https://azure.github.io/azure-service-operator/guide/aso-controller-settings-options/
 	// +optional
@@ -185,6 +190,7 @@ type AzureManagedControlPlaneClassSpec struct {
 	// - ChinaCloud: "AzureChinaCloud"
 	// - PublicCloud: "AzurePublicCloud"
 	// - USGovernmentCloud: "AzureUSGovernmentCloud"
+	// - USGovernmentSecret: "AzureUSSecCloud"
 	//
 	// Note that values other than the default must also be accompanied by corresponding changes to the
 	// aso-controller-settings Secret to configure ASO to refer to the non-Public cloud. ASO currently does
@@ -195,6 +201,10 @@ type AzureManagedControlPlaneClassSpec struct {
 	// - AZURE_RESOURCE_MANAGER_AUDIENCE
 	//
 	// See the [ASO docs] for more details.
+	//
+	// When set to "AzureUSSecCloud", the AZURE_ENVIRONMENT_FILEPATH environment
+	// variable must be set on the controller, pointing to a JSON file containing
+	// the dynamically-discovered cloud endpoints for the air-gapped environment.
 	//
 	// [ASO docs]: https://azure.github.io/azure-service-operator/guide/aso-controller-settings-options/
 	// +optional
@@ -535,34 +545,4 @@ type SecurityGroupClass struct {
 type FrontendIPClass struct {
 	// +optional
 	PrivateIPAddress string `json:"privateIP,omitempty"`
-}
-
-// setDefaults sets default values for AzureClusterClassSpec.
-func (acc *AzureClusterClassSpec) setDefaults() {
-	if acc.AzureEnvironment == "" {
-		acc.AzureEnvironment = DefaultAzureCloud
-	}
-}
-
-// setDefaults sets default values for VnetClassSpec.
-func (vc *VnetClassSpec) setDefaults() {
-	if len(vc.CIDRBlocks) == 0 {
-		vc.CIDRBlocks = []string{DefaultVnetCIDR}
-	}
-}
-
-// setDefaults sets default values for SubnetClassSpec.
-func (sc *SubnetClassSpec) setDefaults(cidr string) {
-	if len(sc.CIDRBlocks) == 0 {
-		sc.CIDRBlocks = []string{cidr}
-	}
-}
-
-// setDefaults sets default values for SecurityGroupClass.
-func (sgc *SecurityGroupClass) setDefaults() {
-	for i := range sgc.SecurityRules {
-		if sgc.SecurityRules[i].Direction == "" {
-			sgc.SecurityRules[i].Direction = SecurityRuleDirectionInbound
-		}
-	}
 }
