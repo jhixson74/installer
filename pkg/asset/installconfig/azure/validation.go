@@ -57,7 +57,9 @@ func Validate(client API, meta *Metadata, ic *types.InstallConfig) error {
 	allErrs := field.ErrorList{}
 
 	allErrs = append(allErrs, validateNetworks(client, ic.Azure, field.NewPath("platform").Child("azure"))...)
-	allErrs = append(allErrs, validateRegion(client, field.NewPath("platform").Child("azure").Child("region"), ic.Azure)...)
+	if ic.Azure.CloudName != aztypes.USSecCloud {
+		allErrs = append(allErrs, validateRegion(client, field.NewPath("platform").Child("azure").Child("region"), ic.Azure)...)
+	}
 	if ic.Azure.CloudName == aztypes.StackCloud {
 		allErrs = append(allErrs, validateAzureStackDiskType(client, ic)...)
 	}
