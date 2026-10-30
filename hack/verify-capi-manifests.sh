@@ -31,6 +31,7 @@ generate_capi_manifest() {
 			"privateendpoints.network.azure.com"
 			"fleetsmembers.containerservice.azure.com"
 			"extensions.kubernetesconfiguration.azure.com"
+			"privatelinkservices.network.azure.com"
 		)
 
 		# Build the yq filter for allowed CRD names
@@ -39,7 +40,7 @@ generate_capi_manifest() {
 		for crd_name in "${aso_crds[@]}"; do
 			crd_filter="${crd_filter}.metadata.name == \"${crd_name}\" or "
 		done
-		crd_filter="${crd_filter}false"  # Add false at the end to close the OR chain
+		crd_filter="${crd_filter}false" # Add false at the end to close the OR chain
 		set -x
 
 		# Download operator manifests (namespace, deployment, webhooks, services)
@@ -47,9 +48,9 @@ generate_capi_manifest() {
 		echo "---" >>"${MANIFESTS_DIR}/${provider}-infrastructure-components.yaml"
 
 		# Download and filter CRDs to only include those needed by CAPZ
-		curl -fSsL "https://github.com/Azure/azure-service-operator/releases/download/${version}/azureserviceoperator_customresourcedefinitions_${version}.yaml" | \
-		    yq e ". | select(.kind != \"CustomResourceDefinition\" or (.kind == \"CustomResourceDefinition\" and (${crd_filter})))" - \
-			>>"${MANIFESTS_DIR}/${provider}-infrastructure-components.yaml"
+		curl -fSsL "https://github.com/Azure/azure-service-operator/releases/download/${version}/azureserviceoperator_customresourcedefinitions_${version}.yaml" |
+			yq e ". | select(.kind != \"CustomResourceDefinition\" or (.kind == \"CustomResourceDefinition\" and (${crd_filter})))" - \
+				>>"${MANIFESTS_DIR}/${provider}-infrastructure-components.yaml"
 	elif [ "${provider}" = "openstackorc" ]; then
 		# Just copy the CRD from upstream
 		curl -fSsL "https://github.com/k-orc/openstack-resource-controller/releases/download/${version}/install.yaml" -o "${MANIFESTS_DIR}/${provider}-infrastructure-components.yaml"
