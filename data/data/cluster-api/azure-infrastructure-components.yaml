@@ -18685,6 +18685,35 @@ webhooks:
     service:
       name: azureserviceoperator-webhook-service
       namespace: capz-system
+      path: /mutate-datafactory-azure-com-v20180601-factory
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: default.v20180601.factories.datafactory.azure.com
+  rules:
+  - apiGroups:
+    - datafactory.azure.com
+    apiVersions:
+    - v20180601
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - factories
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: capz-system/azureserviceoperator-serving-cert
+  name: azureserviceoperator-dataprotection-mwh
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: azureserviceoperator-webhook-service
+      namespace: capz-system
       path: /mutate-dataprotection-azure-com-v1api20230101-backupvault
   failurePolicy: Fail
   matchPolicy: Exact
@@ -21501,6 +21530,98 @@ webhooks:
     - eventgrid.azure.com
     apiVersions:
     - v1api20200601
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - topics
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: capz-system/azureserviceoperator-serving-cert
+  name: azureserviceoperator-eventhub-mwh
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: azureserviceoperator-webhook-service
+      namespace: capz-system
+      path: /mutate-eventgrid-azure-com-v20200601-domain
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: default.v20200601.domains.eventgrid.azure.com
+  rules:
+  - apiGroups:
+    - eventgrid.azure.com
+    apiVersions:
+    - v20200601
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - domains
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: azureserviceoperator-webhook-service
+      namespace: capz-system
+      path: /mutate-eventgrid-azure-com-v20200601-domainstopic
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: default.v20200601.domainstopics.eventgrid.azure.com
+  rules:
+  - apiGroups:
+    - eventgrid.azure.com
+    apiVersions:
+    - v20200601
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - domainstopics
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: azureserviceoperator-webhook-service
+      namespace: capz-system
+      path: /mutate-eventgrid-azure-com-v20200601-eventsubscription
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: default.v20200601.eventsubscriptions.eventgrid.azure.com
+  rules:
+  - apiGroups:
+    - eventgrid.azure.com
+    apiVersions:
+    - v20200601
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - eventsubscriptions
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: azureserviceoperator-webhook-service
+      namespace: capz-system
+      path: /mutate-eventgrid-azure-com-v20200601-topic
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: default.v20200601.topics.eventgrid.azure.com
+  rules:
+  - apiGroups:
+    - eventgrid.azure.com
+    apiVersions:
+    - v20200601
     operations:
     - CREATE
     - UPDATE
@@ -30600,7 +30721,6 @@ webhooks:
     resources:
     - managedenvironments
   sideEffects: None
->>>>>>> main-capz-bump
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
@@ -33169,6 +33289,35 @@ webhooks:
     - datafactory.azure.com
     apiVersions:
     - v1api20180601
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - factories
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: capz-system/azureserviceoperator-serving-cert
+  name: azureserviceoperator-dataprotection-vwh
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: azureserviceoperator-webhook-service
+      namespace: capz-system
+      path: /validate-datafactory-azure-com-v20180601-factory
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: validate.v20180601.factories.datafactory.azure.com
+  rules:
+  - apiGroups:
+    - datafactory.azure.com
+    apiVersions:
+    - v20180601
     operations:
     - CREATE
     - UPDATE
@@ -36034,6 +36183,98 @@ webhooks:
     - eventgrid.azure.com
     apiVersions:
     - v1api20200601
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - topics
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: capz-system/azureserviceoperator-serving-cert
+  name: azureserviceoperator-eventhub-vwh
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: azureserviceoperator-webhook-service
+      namespace: capz-system
+      path: /validate-eventgrid-azure-com-v20200601-domain
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: validate.v20200601.domains.eventgrid.azure.com
+  rules:
+  - apiGroups:
+    - eventgrid.azure.com
+    apiVersions:
+    - v20200601
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - domains
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: azureserviceoperator-webhook-service
+      namespace: capz-system
+      path: /validate-eventgrid-azure-com-v20200601-domainstopic
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: validate.v20200601.domainstopics.eventgrid.azure.com
+  rules:
+  - apiGroups:
+    - eventgrid.azure.com
+    apiVersions:
+    - v20200601
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - domainstopics
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: azureserviceoperator-webhook-service
+      namespace: capz-system
+      path: /validate-eventgrid-azure-com-v20200601-eventsubscription
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: validate.v20200601.eventsubscriptions.eventgrid.azure.com
+  rules:
+  - apiGroups:
+    - eventgrid.azure.com
+    apiVersions:
+    - v20200601
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - eventsubscriptions
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: azureserviceoperator-webhook-service
+      namespace: capz-system
+      path: /validate-eventgrid-azure-com-v20200601-topic
+  failurePolicy: Fail
+  matchPolicy: Exact
+  name: validate.v20200601.topics.eventgrid.azure.com
+  rules:
+  - apiGroups:
+    - eventgrid.azure.com
+    apiVersions:
+    - v20200601
     operations:
     - CREATE
     - UPDATE
